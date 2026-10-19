@@ -4,12 +4,27 @@ const crypto = require('crypto');
 const fs = require('fs');
 const { WebSocketServer } = require('ws');
 const { Chess } = require('chess.js');
-
-/* ---------- تخزين بسيط في ملف JSON ---------- */
-const DB_FILE = process.env.DB_FILE || 'data.json';
+/* ---------- تخزين في MongoDB ---------- */
+const { MongoClient } = require('mongodb');
 let db = { users: {}, tokens: {} };
-try { db = JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); } catch {}
-const save = () => fs.writeFileSync(DB_FILE, JSON.stringify(db));
+let col, timer = null;
+const flush = () => col.replaceOne({ _id: 'main' }, { _id: 'main', ...db }, { upsert: true });
+const save = () => {
+  if (!col || timer) return;
+  timer = setTimeout(async () => {
+    timer = null;
+    try { await flush(); } catch (e) { console.error('save failed', e.message); }
+  }, 300);
+};
+async function initDb() {
+  const client = new MongoClient(process.env.MONGODB_URI);
+  await client.connect();
+  col = client.db('chess').collection('state');
+  const doc = await col.findOne({ _id: 'main' });
+  if (doc) db = { users: doc.users || {}, tokens: doc.tokens || {} };
+}
+process.on('SIGTERM', async () => { try { if (col) await flush(); } catch {} process.exit(0); });
+
 
 const hashPw = (pw, salt) => crypto.scryptSync(pw, salt, 32).toString('hex');
 const findByName = (n) => Object.values(db.users).find(u => u.name.toLowerCase() === n.toLowerCase());
@@ -214,7 +229,9 @@ function acceptFriend(me, other) {
 }
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log('http://localhost:' + PORT));
+initDb()
+  .then(() => server.listen(PORT, () => console.log('listening ' + PORT)))
+  .catch(e => { console.error('DB connect failed', e); process.exit(1); });
 
 /* ---------- الواجهة (الصفحة كاملة داخل هذا الملف) ---------- */
 const HTML = `<!DOCTYPE html>
